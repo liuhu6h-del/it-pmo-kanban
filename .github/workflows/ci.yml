@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: JS syntax check
+        run: |
+          node -e 'const h=require("fs").readFileSync("index.html","utf8");new Function(h.split("<script>")[1].split("</script>")[0]);console.log("ok")'
+
+      - name: Constraint check
+        run: |
+          if grep -nE 'localStorage|sessionStorage|indexedDB|document\.cookie|confirm\(|alert\(|!important' index.html; then
+            echo "::error::Forbidden API or !important found in index.html"
+            exit 1
+          fi
+          if grep -noE 'https?://[^"'"'"' )<>]+' index.html | grep -v 'https://formsubmit.co/'; then
+            echo "::error::External URL other than formsubmit.co found in index.html"
+            exit 1
+          fi
+          echo "ok"
+
+      - name: Secret scan
+        run: |
+          pattern='BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}|sk-[A-Za-z0-9_-]{20,}|xox[bap]-[A-Za-z0-9-]{10,}'
+          if git ls-files -z | xargs -0 grep -nE "$pattern"; then
+            echo "::error::Possible secret found"
+            exit 1
+          fi
+          if git ls-files | grep -E '(^|/)(\.env[^/]*|[^/]*\.(pem|key|p12))$|(^|/)\.DS_Store$|settings\.local\.json$'; then
+            echo "::error::File that should not be published is tracked"
+            exit 1
+          fi
+          echo "ok"
+
+  deploy:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - name: Build site folder
+        run: |
+          mkdir _site
+          cp index.html _site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
